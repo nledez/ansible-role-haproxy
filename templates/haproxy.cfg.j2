@@ -19,14 +19,16 @@ defaults
   mode  http
   option  httplog
   option  dontlognull
+  option forwardfor
+  option http-server-close
 {% if haproxy_version == '1.4' %}
-        contimeout 5000
-        clitimeout 50000
-        srvtimeout 50000
+  contimeout 5000
+  clitimeout 500000
+  srvtimeout 500000
 {% else %}
-        timeout connect 5000
-        timeout client 50000
-        timeout server 50000
+  timeout connect 5000
+  timeout client 50000
+  timeout server 50000
 {% endif %}
 {% if ansible_os_family == 'Debian' %}
   errorfile 400 /etc/haproxy/errors/400.http
@@ -38,12 +40,36 @@ defaults
   errorfile 504 /etc/haproxy/errors/504.http
 {% endif %}
 
-frontend {{ haproxy_frontend_name }}
-    bind {{ haproxy_frontend_bind_address }}:{{ haproxy_frontend_port }}
+frontend {{ haproxy_frontend_name }}_http
+    bind {{ haproxy_frontend_bind_address }}:80
+    mode {{ haproxy_frontend_mode }}
+    default_backend bk_letsencrypt
+    reqadd X-Forwarded-Proto:\ http
+
+    tcp-request inspect-delay 5s
+
+    acl app_letsencrypt path_beg /.well-known/acme-challenge/
+    use_backend bk_letsencrypt if app_letsencrypt
+{% for vhost in haproxy_vhosts %}
+    redirect scheme https if !app_letsencrypt { hdr(Host) -i {{ vhost.fqdn }} } !{ ssl_fc }
+{% endfor %}
+
+frontend {{ haproxy_frontend_name }}_https
+    bind {{ haproxy_frontend_bind_address }}:443 ssl{% for cert in haproxy_certs %} crt {{ cert }}{% endfor %}
+
     mode {{ haproxy_frontend_mode }}
     default_backend {{ haproxy_backend_name }}
+    reqadd X-Forwarded-Proto:\ https
 
-backend {{ haproxy_backend_name }}
+    tcp-request inspect-delay 5s
+    tcp-request content accept if { req_ssl_hello_type 1 }
+
+{% for vhost in haproxy_vhosts %}
+    use_backend bk_{{ vhost.name }} if { ssl_fc_sni {{ vhost.fqdn }} }
+{% endfor %}
+
+{% for vhost in haproxy_vhosts %}
+backend bk_{{ vhost.name }}
     mode {{ haproxy_backend_mode }}
     balance {{ haproxy_backend_balance_method }}
     option forwardfor
@@ -51,6 +77,13 @@ backend {{ haproxy_backend_name }}
     option httpchk {{ haproxy_backend_httpchk }}
 {% endif %}
     cookie SERVERID insert indirect
-{% for backend in haproxy_backend_servers %}
+{% for backend in vhost.backend %}
     server {{ backend.name }} {{ backend.address }} cookie {{ backend.name }} check
 {% endfor %}
+
+{% endfor %}
+backend bk_letsencrypt
+    log global
+    mode http
+    option httplog
+    server srv_letsencrypt 127.0.0.1:63443

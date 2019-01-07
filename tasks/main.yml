@@ -33,5 +33,11 @@
     validate: haproxy -f %s -c -q
   notify: restart haproxy
 
+- name: Create a vhost list file
+  template:
+    src: vhostlist.txt.j2
+    dest: /etc/haproxy/vhostlist.txt
+    mode: 0644
+
 - name: Ensure HAProxy is started and enabled on boot.
   service: name=haproxy state=started enabled=yes
